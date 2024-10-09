@@ -1,0 +1,24 @@
+name: FarmingContest
+version: 1.0
+main: me.sabin.farmingContest.JacobMain
+api-version: 1.18
+commands:
+  startcontest:
+    description: Starts a new farming contest.
+    usage: /startcontest
+  endcontest:
+    description: Ends the current farming contest.
+    usage: /endcontest
+  checkscore:
+    description: Checks your current score in the farming contest.
+    usage: /checkscore
+permissions:
+  farmingcontest.start:
+    description: Allows players to start a farming contest.
+    default: op
+  farmingcontest.end:
+    description: Allows players to end a farming contest.
+    default: op
+  farmingcontest.check:
+    description: Allows players to check their score.
+    default: true
