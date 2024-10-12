@@ -4,25 +4,23 @@ import org.bukkit.Bukkit;
 import org.bukkit.ChatColor;
 import org.bukkit.entity.Player;
 import org.bukkit.plugin.java.JavaPlugin;
-import org.bukkit.scoreboard.DisplaySlot;
-import org.bukkit.scoreboard.Objective;
-import org.bukkit.scoreboard.Scoreboard;
-import org.bukkit.scoreboard.ScoreboardManager;
+import org.bukkit.scheduler.BukkitRunnable;
+import org.bukkit.scoreboard.*;
 
-import java.util.HashMap;
-import java.util.List;
-import java.util.UUID;
+import java.util.*;
 import java.util.stream.Collectors;
 
 public class JacobMain extends JavaPlugin {
-    public HashMap<UUID, Integer> contestScores = new HashMap<>();
+    public final HashMap<UUID, Integer> contestScores = new HashMap<>();
     public boolean contestActive = false;
+    private JacobTimer timer; // Timer instance
 
-    @Override
-    public void onEnable() {
-        new JacobCommands(this);
-        new JacobListener(this);
-    }
+    private int lowestDiamondScore;
+    private int lowestPlatinumScore;
+    private int lowestGoldScore;
+    private int lowestSilverScore;
+    private int lowestBronzeScore;
+
     String none = ChatColor.WHITE + "None";
     String bronze = ChatColor.RED + "BRONZE";
     String silver = ChatColor.GRAY + "SILVER";
@@ -30,158 +28,201 @@ public class JacobMain extends JavaPlugin {
     String platinum = ChatColor.AQUA + "PLATINUM";
     String diamond = ChatColor.BLUE + "DIAMOND";
 
-    public String getBracket(UUID playerUUID) {
-        int score = contestScores.getOrDefault(playerUUID, 0);
+    @Override
+    public void onEnable() {
+        getServer().getPluginManager().registerEvents(new JacobListener(this), this);
 
-        // Players with a score below 100 won't get a bracket or scoreboard.
-        if (score < 100) return "None";
+        JacobCommands commands = new JacobCommands(this);
+        Objects.requireNonNull(getCommand("startcontest")).setExecutor(commands);
+        Objects.requireNonNull(getCommand("endcontest")).setExecutor(commands);
+        Objects.requireNonNull(getCommand("checkscore")).setExecutor(commands);
 
-        List<Integer> sortedScores = contestScores.values().stream()
-                .filter(s -> s >= 100) // Include only scores above 100.
-                .sorted((a, b) -> Integer.compare(b, a)) // Sort in descending order.
-                .collect(Collectors.toList());
-
-        int totalPlayers = sortedScores.size();
-        int playerRank = sortedScores.indexOf(score) + 1; // 1-based rank.
-
-        // Calculate percentile
-        double percentile = (double) playerRank / totalPlayers;
-
-        if (percentile <= 0.02) return "Diamond";
-        if (percentile <= 0.05) return "Platinum";
-        if (percentile <= 0.10) return "Gold";
-        if (percentile <= 0.30) return "Silver";
-        if (percentile <= 0.60) return "Bronze";
-        return "None"; // Fallback, but should not be hit.
+        // Log to confirm registration
+        getLogger().info("Commands registered successfully.");
     }
 
+    // Method to start the contest and schedule recalculation every 20 ticks
+    public void startContest() {
+        contestActive = true;
+        contestScores.clear();
+        Bukkit.broadcastMessage("Jacob's Farming Contest has started!");
+
+        // Start the timer for 5 minutes
+        timer = new JacobTimer(this);
+        timer.runTaskTimer(this, 0, 20); // Runs every second
+
+        new BukkitRunnable() {
+            @Override
+            public void run() {
+                if (contestActive) {
+                    recalculateBrackets(); // Recalculate brackets every 20 ticks
+                    updateAllScoreboards(); // Update all scoreboards
+                } else {
+                    cancel(); // Stop the task when contest ends
+                }
+            }
+        }.runTaskTimer(this, 0, 20); // Runs every 20 ticks
+    }
+
+
+    public void endContest() {
+        contestActive = false;
+        timer.cancel(); // Stop the timer when contest ends
+        Bukkit.broadcastMessage("Jacob's Farming Contest has ended!");
+    }
+
+    // Method to update all players' scoreboards
+    public void updateAllScoreboards() {
+        for (Player player : Bukkit.getOnlinePlayers()) {
+            updateScoreboard(player);
+        }
+    }
+    public void recalculateBrackets() {
+        List<Integer> sortedScores = contestScores.values().stream()
+                .filter(score -> score >= 100) // Only include scores >= 100
+                .sorted(Collections.reverseOrder()) // Sort in descending order
+                .collect(Collectors.toList());
+
+        lowestDiamondScore = getLowestScoreForBracket(0.02, sortedScores);
+        lowestPlatinumScore = getLowestScoreForBracket(0.07, sortedScores); // 2% + 5%
+        lowestGoldScore = getLowestScoreForBracket(0.17, sortedScores); // 2% + 5% + 10%
+        lowestSilverScore = getLowestScoreForBracket(0.47, sortedScores); // 2% + 5% + 10% + 30%
+        lowestBronzeScore = getLowestScoreForBracket(0.53, sortedScores); // Rest for bronze (60%+)
+    }
+
+    // Update scoreboard for a specific player
     public void updateScoreboard(Player player) {
         UUID playerUUID = player.getUniqueId();
-        int score = contestScores.getOrDefault(playerUUID, 0);
+        int score = contestScores.get(playerUUID);
 
-        // Only show scoreboard if score is above 100
-        if (score <= 100) {
-            return; // Do not display anything for players with score 100 or below
+        if (!(contestActive) && score < 100) {
+            return;
         }
+        if(contestActive && score> 100) {
 
-        ScoreboardManager manager = Bukkit.getScoreboardManager();
-        Scoreboard board = manager.getNewScoreboard();
-
-        // Create objective to track scores
-        Objective objective = board.registerNewObjective("contestScore", "dummy", ChatColor.YELLOW + "Jacob's Contest");
-        objective.setDisplaySlot(DisplaySlot.SIDEBAR);
-
-        // Empty line
-        objective.getScore(ChatColor.RESET.toString()).setScore(4);
-
-        // Contest type (assuming potato event)
-        objective.getScore(ChatColor.WHITE + "Potato").setScore(3);
-
-        // Time left (dummy data)
-        objective.getScore(ChatColor.GREEN + "Time: 05:00").setScore(2);
-
-        // Empty line
-        objective.getScore(ChatColor.RESET.toString()).setScore(1);
-
-        String playerBracket = getBracket(playerUUID);
-
-        if (playerBracket.equals("None")) {
-            objective.getScore(ChatColor.WHITE + "Collected: " + ChatColor.YELLOW + score).setScore(0);
-        }
-
-        if (!playerBracket.equals("None")) {
-            // Show player's bracket if they have one
-            objective.getScore(playerBracket + " with " + score).setScore(0);
-
-            // Get next lowest score for the next bracket
-            int nextLowestScore = getNextLowestScore(playerUUID);
-            if (nextLowestScore > 0) {
-                String nextBracket = getBracketName(nextLowestScore);
-                objective.getScore(ChatColor.WHITE + nextBracket + " has " + ChatColor.YELLOW + (nextLowestScore - score)).setScore(-1);
+            ScoreboardManager manager = Bukkit.getScoreboardManager();
+            if (manager == null) {
+                player.sendMessage(ChatColor.RED + "Scoreboard manager not available!");
+                return; // Handle the error, maybe log it
             }
-        }
 
-        player.setScoreboard(board);
+            Scoreboard board = manager.getNewScoreboard();
+            Objective objective = board.registerNewObjective("contestScore", "dummy", ChatColor.YELLOW + "Jacob's Contest");
+            objective.setDisplaySlot(DisplaySlot.SIDEBAR);
+
+            // Contest info
+            objective.getScore(ChatColor.WHITE + "Potato").setScore(3);
+            objective.getScore(ChatColor.GREEN + "Time: " + (timer.getRemainingTime() / 60) + ":" + String.format("%02d", timer.getRemainingTime() % 60)).setScore(2); // Update time
+
+            // Player's bracket
+            String playerBracket = getBracket(playerUUID);
+            String PlayerNextBracket = getNextBracket(playerUUID);
+
+                objective.getScore("Collected: " + ChatColor.YELLOW + score);
+
+            if (playerBracket.equals(bronze)||playerBracket.equals(silver)||playerBracket.equals(gold)||playerBracket.equals(platinum)||playerBracket.equals(diamond)){
+                objective.getScore(playerBracket + ChatColor.WHITE + " with " + score).setScore(1); // Score position for player's score
+            }
+
+            // Display the lowest score for the player's bracket
+            int lowestScoreForBracket = -1;
+              if (playerBracket.equals(platinum)) {
+                lowestScoreForBracket = lowestDiamondScore;
+            } else if (playerBracket.equals(gold)) {
+                lowestScoreForBracket = lowestPlatinumScore;
+            } else if (playerBracket.equals(silver)) {
+                lowestScoreForBracket = lowestGoldScore;
+            } else if (playerBracket.equals(bronze)) {
+                lowestScoreForBracket = lowestSilverScore;
+            } else if (playerBracket.equals(none)) {
+                lowestScoreForBracket=lowestBronzeScore;
+            }
+
+            if (lowestScoreForBracket != -1) {
+                objective.getScore(ChatColor.WHITE + PlayerNextBracket + " has " + lowestScoreForBracket).setScore(0); // Score position for the lowest score
+            }
+
+            player.setScoreboard(board);
+        }
     }
 
-
-    private int getNextLowestScore(UUID playerUUID) {
-        String playerBracket = getBracket(playerUUID);
-        List<Integer> sortedScores = contestScores.values().stream()
-                .filter(s -> s >= 100) // Only consider players with scores >= 100.
-                .sorted()
-                .collect(Collectors.toList());
-
-        // Check for the next lowest score in the higher bracket.
-        switch (playerBracket) {
-            case "None":
-                return getLowestScoreInBracket("Bronze", sortedScores);
-            case "Bronze":
-                return getLowestScoreInBracket("Silver", sortedScores);
-            case "Silver":
-                return getLowestScoreInBracket("Gold", sortedScores);
-            case "Gold":
-                return getLowestScoreInBracket("Platinum", sortedScores);
-            case "Platinum":
-                return getLowestScoreInBracket("Diamond", sortedScores);
-            case "Diamond":
-                return -1; // No higher bracket.
-            default:
-                return -1;
-        }
-    }
-    private int getBracketPercentileScore(double percentile, List<Integer> sortedScores) {
+    // Helper method to get the lowest score for a bracket based on percentile
+    public int getLowestScoreForBracket(double percentile, List<Integer> sortedScores) {
         int totalPlayers = sortedScores.size();
-        if (totalPlayers == 0) return -1; // No players to compare.
+        if (totalPlayers == 0) return -1;
 
-        int index = (int) Math.ceil(percentile * totalPlayers) - 1; // Percentile index.
-        if (index < 0 || index >= sortedScores.size()) return -1;
-
-        return sortedScores.get(index);
+        int index = (int) Math.ceil(percentile * totalPlayers) - 1;
+        return (index < 0 || index >= sortedScores.size()) ? -1 : sortedScores.get(index);
     }
 
-    private int getLowestScoreInBracket(String bracket, List<Integer> scores) {
-        int minScoreInBracket = -1;
 
-        switch (bracket) {
-            case "bronze":
-                minScoreInBracket = getBracketPercentileScore(0.60, scores);
-                break;
-            case "silver":
-                minScoreInBracket = getBracketPercentileScore(0.30, scores);
-                break;
-            case "gold":
-                minScoreInBracket = getBracketPercentileScore(0.10, scores);
-                break;
-            case "platinum":
-                minScoreInBracket = getBracketPercentileScore(0.05, scores);
-                break;
-            case "diamond":
-                minScoreInBracket = getBracketPercentileScore(0.02, scores);
-                break;
-        }
+    // Get the bracket of a player based on their score
+    public String getBracket(UUID playerUUID) {
+        int score = contestScores.getOrDefault(playerUUID, 0);
+        if (score < 100) return none;
 
-        return minScoreInBracket;
-    }
-
-    private String getBracketName(int score) {
         List<Integer> sortedScores = contestScores.values().stream()
-                .filter(s -> s > 100)
-                .sorted((a, b) -> Integer.compare(b, a))
+                .filter(s -> s >= 100)
+                .sorted(Collections.reverseOrder())
+                .toList();
+
+        int playerRank = sortedScores.indexOf(score) + 1;
+        int totalPlayers = sortedScores.size();
+        double percentile = (double) playerRank / totalPlayers;
+
+        if (percentile <= 0.02) return diamond;
+        if (percentile <= 0.07) return platinum;
+        if (percentile <= 0.17) return gold;
+        if (percentile <= 0.47) return silver;
+        if (percentile <= 0.53) return bronze;
+        if (percentile<= 1.0) return none;
+
+        return none;
+    }
+    public String getNextBracket(UUID playerUUID){
+        String playerBracket = getBracket(playerUUID);
+        if (playerBracket.equals(none)){
+            String nextBronze = bronze;
+        } else if (playerBracket.equals(bronze)) {
+            String nextSilver = silver;
+        }
+        else if (playerBracket.equals(silver)) {
+            String nextSilver = gold;
+        }
+        else if (playerBracket.equals(platinum)) {
+            String nextSilver = diamond;
+        }
+        return none;
+    }
+
+    // Get the bracket name for a given score
+    public String getBracketName(int score) {
+        // Similar logic as getBracket but for displaying other players' bracket names
+        return getBracketNameFromScore(score);
+    }
+
+    public String getBracketNameFromScore(int score) {
+        List<Integer> sortedScores = contestScores.values().stream()
+                .filter(s -> s >= 100)
+                .sorted(Collections.reverseOrder())
                 .collect(Collectors.toList());
 
         int totalPlayers = sortedScores.size();
         int index = sortedScores.indexOf(score);
 
-        if (index == -1) return "None"; // Score not found
+        double percentile = (double) (index + 1) / totalPlayers;
 
-        double percentage = (double) (index + 1) / totalPlayers;
+        if (percentile <= 0.02) return diamond;
+        if (percentile <= 0.07) return platinum;
+        if (percentile <= 0.17) return gold;
+        if (percentile <= 0.47) return silver;
+        if (percentile <= 1.0) return bronze;
 
-        if (percentage <= 0.02) return diamond;
-        if (percentage <= 0.05) return platinum;
-        if (percentage <= 0.10) return gold;
-        if (percentage <= 0.30) return silver;
-        if (percentage <= 0.60) return bronze;
         return none;
+    }
+
+
+    public JacobTimer getTimer() {
+        return timer;
     }
 }
